@@ -1,48 +1,97 @@
 /*
- * Copyright (c) 2021 Nordic Semiconductor ASA
+ * Copyright (c) 2016 Intel Corporation.
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/sensor.h>
-#include <app_version.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/usb/usb_device.h>
+#include <zephyr/usb/usbd.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/drivers/usb/usb_dc.h>
 
-#include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(main, CONFIG_APP_LOG_LEVEL);
+BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), zephyr_cdc_acm_uart),
+	     "Console device is not ACM CDC UART device");
 
-int main(void)
+USBD_CONFIGURATION_DEFINE(config_1,
+			  USB_SCD_SELF_POWERED,
+			  200);
+
+USBD_DESC_LANG_DEFINE(sample_lang);
+USBD_DESC_MANUFACTURER_DEFINE(sample_mfr, "ZEPHYR");
+USBD_DESC_PRODUCT_DEFINE(sample_product, "Zephyr USBD ACM console");
+USBD_DESC_SERIAL_NUMBER_DEFINE(sample_sn, "0123456789ABCDEF");
+
+USBD_DEVICE_DEFINE(sample_usbd,
+		   DEVICE_DT_GET(DT_NODELABEL(usbd)),
+		   0x2fe3, 0x0001);
+
+static int enable_usb_device_next(void)
 {
-	int ret;
-	const struct device *sensor;
+	int err;
 
-	printk("Zephyr Example Application %s\n", APP_VERSION_STRING);
-
-	sensor = DEVICE_DT_GET(DT_NODELABEL(examplesensor0));
-	if (!device_is_ready(sensor)) {
-		LOG_ERR("Sensor not ready");
-		return 0;
+	err = usbd_add_descriptor(&sample_usbd, &sample_lang);
+	if (err) {
+		return err;
 	}
 
-	while (1) {
-		struct sensor_value val;
+	err = usbd_add_descriptor(&sample_usbd, &sample_mfr);
+	if (err) {
+		return err;
+	}
 
-		ret = sensor_sample_fetch(sensor);
-		if (ret < 0) {
-			LOG_ERR("Could not fetch sample (%d)", ret);
-			return 0;
-		}
+	err = usbd_add_descriptor(&sample_usbd, &sample_product);
+	if (err) {
+		return err;
+	}
 
-		ret = sensor_channel_get(sensor, SENSOR_CHAN_PROX, &val);
-		if (ret < 0) {
-			LOG_ERR("Could not get sample (%d)", ret);
-			return 0;
-		}
+	err = usbd_add_descriptor(&sample_usbd, &sample_sn);
+	if (err) {
+		return err;
+	}
 
-		printk("Sensor value: %d\n", val.val1);
+	err = usbd_add_configuration(&sample_usbd, &config_1);
+	if (err) {
+		return err;
+	}
 
-		k_sleep(K_MSEC(1000));
+	err = usbd_register_class(&sample_usbd, "cdc_acm_0", 1);
+	if (err) {
+		return err;
+	}
+
+	err = usbd_init(&sample_usbd);
+	if (err) {
+		return err;
+	}
+
+	err = usbd_enable(&sample_usbd);
+	if (err) {
+		return err;
 	}
 
 	return 0;
 }
 
+int main(void)
+{
+	const struct device *const dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+	uint32_t dtr = 0;
+
+	if (enable_usb_device_next()) {
+		return 0;
+	}
+
+	/* Poll if the DTR flag was set */
+	while (!dtr) {
+		uart_line_ctrl_get(dev, UART_LINE_CTRL_DTR, &dtr);
+		/* Give CPU resources to low priority threads. */
+		k_sleep(K_MSEC(100));
+	}
+
+	while (1) {
+		printk("Hello World! %s\n", CONFIG_ARCH);
+		k_sleep(K_SECONDS(1));
+	}
+}
